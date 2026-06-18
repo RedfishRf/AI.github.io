@@ -1,0 +1,703 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no" />
+  <meta name="theme-color" content="#070a12" />
+  <title>手机 Cornell Box 光线追踪</title>
+  <style>
+    :root{ color-scheme: dark; --glass: rgba(12,16,28,.72); --line: rgba(255,255,255,.14); --text: rgba(245,248,255,.94); --muted: rgba(225,232,255,.62); --accent: #7dd3fc; --good: #86efac; }
+    *{ box-sizing:border-box; -webkit-tap-highlight-color: transparent; }
+    html,body{ margin:0; width:100%; height:100%; overflow:hidden; background:#05070d; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; color:var(--text); }
+    canvas{ position:fixed; inset:0; width:100vw; height:100dvh; display:block; touch-action:none; background:#05070d; }
+    #hud{ position:fixed; inset:max(10px, env(safe-area-inset-top)) max(10px, env(safe-area-inset-right)) auto max(10px, env(safe-area-inset-left)); z-index:5; pointer-events:none; }
+    .top{ display:flex; gap:10px; align-items:flex-start; justify-content:space-between; pointer-events:auto; }
+    .brand,.panel,.badge{ border:1px solid var(--line); background:linear-gradient(180deg, rgba(18,24,40,.78), rgba(8,12,22,.66)); box-shadow:0 18px 60px rgba(0,0,0,.35), inset 0 1px 0 rgba(255,255,255,.08); backdrop-filter: blur(18px) saturate(1.2); -webkit-backdrop-filter: blur(18px) saturate(1.2); border-radius:18px; }
+    .brand{ padding:12px 14px; max-width:min(520px, calc(100vw - 20px)); }
+    .brand b{ display:block; font-size:15px; letter-spacing:.2px; }
+    .brand small{ display:block; margin-top:4px; color:var(--muted); font-size:12px; line-height:1.35; }
+    .badge{ padding:9px 10px; min-width:118px; text-align:right; font-size:12px; color:var(--muted); white-space:nowrap; }
+    .badge strong{ display:block; color:var(--text); font-size:16px; margin-bottom:2px; font-variant-numeric: tabular-nums; }
+    .panel{ margin-top:10px; pointer-events:auto; overflow:hidden; }
+    summary{ list-style:none; cursor:pointer; padding:12px 14px; font-weight:700; display:flex; justify-content:space-between; align-items:center; user-select:none; }
+    summary::-webkit-details-marker{ display:none; }
+    summary:after{ content:"▾"; color:var(--accent); transition:transform .18s ease; }
+    details:not([open]) summary:after{ transform:rotate(-90deg); }
+    .controls{ border-top:1px solid var(--line); padding:10px 12px 12px; display:grid; gap:12px; max-height:52dvh; overflow:auto; }
+    label{ display:grid; gap:7px; color:var(--muted); font-size:12px; }
+    .row{ display:flex; align-items:center; justify-content:space-between; gap:12px; }
+    output{ color:var(--text); font-variant-numeric: tabular-nums; min-width:46px; text-align:right; }
+    input[type="range"]{ width:100%; accent-color:var(--accent); }
+    input[type="checkbox"]{ width:22px; height:22px; accent-color:var(--accent); }
+    .buttons{ display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+    button{ border:1px solid var(--line); color:var(--text); background:linear-gradient(180deg, rgba(255,255,255,.12), rgba(255,255,255,.05)); border-radius:14px; min-height:42px; padding:0 12px; font-weight:700; cursor:pointer; }
+    button:active{ transform:translateY(1px); }
+    .hint{ color:rgba(225,232,255,.52); font-size:11px; line-height:1.45; padding:0 2px 2px; }
+    #fallback{ position:fixed; inset:0; display:none; place-items:center; padding:24px; text-align:center; background:#05070d; z-index:10; }
+    #fallback .box{ max-width:420px; border:1px solid var(--line); border-radius:22px; padding:22px; background:var(--glass); box-shadow:0 20px 80px rgba(0,0,0,.45); }
+    .chip{ display:inline-flex; align-items:center; gap:6px; padding:6px 9px; border:1px solid rgba(134,239,172,.25); color:var(--good); background:rgba(134,239,172,.08); border-radius:999px; font-size:12px; margin-bottom:12px; }
+    @media (min-width: 760px){ #hud{ inset:18px 18px auto 18px; } .panel{ width:360px; } .brand{ max-width:560px; } }
+  </style>
+</head>
+<body>
+  <canvas id="glcanvas" aria-label="手机 Cornell Box 光线追踪画布"></canvas>
+
+  <div id="hud">
+    <div class="top">
+      <div class="brand">
+        <b>手机 Cornell Box 光线追踪</b>
+        <small>已改为康奈尔盒：红/绿侧墙、白墙、白方块、顶部面光源。拖动旋转 · 双指缩放 · 双击重置。</small>
+      </div>
+      <div class="badge">
+        <strong id="sampleReadout">0</strong>
+        samples
+        <span id="fpsReadout">-- fps</span>
+      </div>
+    </div>
+
+    <details class="panel" open>
+      <summary>交互设计</summary>
+      <div class="controls">
+        <label>
+          <span class="row">分辨率 <output id="resVal">80%</output></span>
+          <input id="resolution" type="range" min="0.50" max="1.50" step="0.05" value="0.80" />
+        </label>
+        <label>
+          <span class="row">每帧采样 <output id="spfVal">1</output></span>
+          <input id="samplesPerFrame" type="range" min="1" max="4" step="1" value="1" />
+        </label>
+        <label>
+          <span class="row">最大采样 <output id="maxVal">256</output></span>
+          <input id="maxSamples" type="range" min="64" max="1024" step="64" value="256" />
+        </label>
+        <label>
+          <span class="row">曝光 <output id="expVal">1.00</output></span>
+          <input id="exposure" type="range" min="0.50" max="2.00" step="0.05" value="1.00" />
+        </label>
+        <label class="row">
+          <span>自动环绕</span>
+          <input id="autoOrbit" type="checkbox" />
+        </label>
+        <div class="buttons">
+          <button id="randomLight">随机灯光</button>
+          <button id="resetCamera">重置视角</button>
+        </div>
+        <div class="hint">
+          已修正镜头：画面不再过度放大；竖屏时会自动扩大垂直 FOV，让 Cornell 盒完整进入画面。
+        </div>
+      </div>
+    </details>
+  </div>
+
+  <div id="fallback">
+    <div class="box">
+      <div class="chip">WebGL2 不可用</div>
+      <h1>打不开光线追踪</h1>
+      <p>请在 Android Chrome / Edge / Samsung Internet 中打开此 HTML。旧浏览器或省电模式可能会禁用 WebGL2。</p>
+    </div>
+  </div>
+
+<script>
+(() => {
+  const canvas = document.getElementById('glcanvas');
+  const fallback = document.getElementById('fallback');
+  const gl = canvas.getContext('webgl2', {
+    alpha: false,
+    antialias: false,
+    depth: false,
+    stencil: false,
+    preserveDrawingBuffer: false,
+    powerPreference: 'high-performance'
+  });
+
+  if (!gl) {
+    fallback.style.display = 'grid';
+    return;
+  }
+
+  const accVS = `#version 300 es
+  layout(location = 0) in vec2 aPos;
+  void main(){
+    gl_Position = vec4(aPos, 0.0, 1.0);
+  }`;
+
+  const accFS = `#version 300 es
+  precision highp float;
+  precision highp int;
+  out vec4 fragColor;
+
+  uniform vec2 iResolution;
+  uniform float iTime;
+  uniform int iFrame;
+  uniform int iSample;
+  uniform vec4 uCamera;
+  uniform float uExposure;
+  uniform float uAutoOrbit;
+  uniform vec3 uLightColor;
+  uniform float uLightPower;
+
+  #define BOX_COUNT 8
+  #define MAT_RED 0
+  #define MAT_GREEN 1
+  #define MAT_WHITE 2
+  #define MAT_LIGHT 3
+  #define MAT_DARK 4
+  #define MAX_B 6
+
+  uniform vec3 uBoxCenter[BOX_COUNT];
+  uniform vec3 uBoxSize[BOX_COUNT];
+  uniform int uBoxMat[BOX_COUNT];
+
+  struct Hit {
+    float t;
+    int mat;
+    vec3 p;
+    vec3 n;
+    vec3 albedo;
+    vec3 emit;
+  };
+
+  float hash12(vec2 p){
+    vec3 p3 = fract(vec3(p.xyx) * .1031);
+    p3 += dot(p3, p3.yzx + 33.33);
+    return fract((p3.x + p3.y) * p3.z);
+  }
+
+  float rand(vec2 p){
+    return hash12(p + vec2(iFrame * 17, iSample * 131));
+  }
+
+  vec2 rand2(vec2 p){
+    return vec2(rand(p), rand(p + 19.19));
+  }
+
+  vec3 randomUnitVector(vec2 p){
+    float z = rand(p) * 2.0 - 1.0;
+    float a = rand(p + 7.77) * 6.28318530718;
+    float r = sqrt(max(0.0, 1.0 - z * z));
+    return vec3(r * cos(a), z, r * sin(a));
+  }
+
+  vec3 randomHemisphere(vec3 n, vec2 p){
+    vec3 v = randomUnitVector(p);
+    if(dot(v, n) < 0.0) v = -v;
+    return normalize(v);
+  }
+
+  vec3 boxNormal(vec3 c, vec3 s, vec3 p){
+    vec3 q = abs(p - c) - s * 0.5;
+    if(q.x > q.y && q.x > q.z) return vec3(sign(p.x - c.x), 0.0, 0.0);
+    if(q.y > q.x && q.y > q.z) return vec3(0.0, sign(p.y - c.y), 0.0);
+    return vec3(0.0, 0.0, sign(p.z - c.z));
+  }
+
+  vec3 materialAlbedo(int mat){
+    if(mat == MAT_RED) return vec3(0.65, 0.05, 0.04);
+    if(mat == MAT_GREEN) return vec3(0.05, 0.62, 0.05);
+    if(mat == MAT_WHITE) return vec3(0.78, 0.78, 0.76);
+    if(mat == MAT_DARK) return vec3(0.12, 0.12, 0.12);
+    return vec3(1.0);
+  }
+
+  bool intersectBox(vec3 ro, vec3 rd, vec3 c, vec3 s, out float t0, out float t1){
+    vec3 inv = 1.0 / rd;
+    vec3 lo = (c - s * 0.5 - ro) * inv;
+    vec3 hi = (c + s * 0.5 - ro) * inv;
+    vec3 mn = min(lo, hi);
+    vec3 mx = max(lo, hi);
+    t0 = max(max(mn.x, mn.y), mn.z);
+    t1 = min(min(mx.x, mx.y), mx.z);
+    return t1 > max(t0, 0.0);
+  }
+
+  bool hitScene(vec3 ro, vec3 rd, out Hit h){
+    h.t = 1e9;
+    h.mat = -1;
+    h.p = vec3(0.0);
+    h.n = vec3(0.0);
+    h.albedo = vec3(0.0);
+    h.emit = vec3(0.0);
+
+    for(int i = 0; i < BOX_COUNT; i++){
+      float t0, t1;
+      if(intersectBox(ro, rd, uBoxCenter[i], uBoxSize[i], t0, t1)){
+        float t = t0;
+        if(t < 0.001) t = t1;
+        if(t > 0.001 && t < h.t){
+          vec3 c = uBoxCenter[i];
+          vec3 s = uBoxSize[i];
+          h.t = t;
+          h.mat = uBoxMat[i];
+          h.p = ro + rd * t;
+          h.n = boxNormal(c, s, h.p);
+          h.albedo = materialAlbedo(h.mat);
+          if(h.mat == MAT_LIGHT){
+            h.emit = uLightColor * uLightPower;
+            h.albedo = vec3(1.0);
+          }
+        }
+      }
+    }
+    return h.t < 1e8;
+  }
+
+  vec3 sampleLightPoint(vec2 seed){
+    float x = rand(seed) * 2.0 - 1.0;
+    float z = rand(seed + 31.7) * 0.70 - 0.35;
+    return vec3(x, 2.96, z);
+  }
+
+  bool visibleToLight(vec3 p, vec3 wi, float dist){
+    Hit h;
+    vec3 start = p + wi * 0.006;
+    if(hitScene(start, wi, h) && h.t < dist - 0.035 && h.mat != MAT_LIGHT){
+      return false;
+    }
+    return true;
+  }
+
+  vec3 tracePath(vec3 ro, vec3 rd){
+    vec3 radiance = vec3(0.0);
+    vec3 throughput = vec3(1.0);
+    int maxB = min(5, MAX_B);
+
+    for(int b = 0; b < MAX_B; b++){
+      if(b >= maxB) break;
+
+      Hit h;
+      if(!hitScene(ro, rd, h)) {
+        radiance += throughput * vec3(0.015);
+        break;
+      }
+
+      radiance += throughput * h.emit;
+      if(h.mat == MAT_LIGHT) break;
+
+      vec2 seed = h.p.xz + vec2(float(b)) * 13.37 + vec2(float(iFrame)) * 0.013;
+
+      vec3 lp = sampleLightPoint(seed);
+      vec3 toL = lp - h.p;
+      float dist2 = dot(toL, toL);
+      float dist = sqrt(dist2);
+      vec3 wi = toL / dist;
+      float cosS = max(dot(h.n, wi), 0.0);
+      float cosL = max(dot(-wi, vec3(0.0, -1.0, 0.0)), 0.0);
+      float lightArea = 1.0 * 0.70;
+      if(cosS > 0.0 && cosL > 0.0 && visibleToLight(h.p, wi, dist)){
+        radiance += throughput * h.albedo * (uLightColor * uLightPower) * (cosS * cosL * lightArea / (3.1415926535 * dist2));
+      }
+
+      vec3 br = randomHemisphere(h.n, rand2(seed + vec2(5.11, 2.37)));
+      throughput *= h.albedo * 0.92;
+      ro = h.p + h.n * 0.005;
+      rd = br;
+    }
+    return radiance;
+  }
+
+  vec3 aces(vec3 x){
+    const float a = 2.51;
+    const float b = 0.03;
+    const float c = 2.43;
+    const float d = 0.59;
+    const float e = 0.14;
+    return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
+  }
+
+  void main(){
+    vec2 px = gl_FragCoord.xy + rand2(gl_FragCoord.xy) - 0.5;
+    vec2 uv = (px - 0.5 * iResolution.xy) / iResolution.y;
+
+    float yaw = uCamera.x + uAutoOrbit * iTime * 0.055;
+    float pitch = clamp(uCamera.y, -0.30, 0.25);
+    float dist = uCamera.z;
+    float aspect = iResolution.x / iResolution.y;
+    float baseFov = uCamera.w;
+    float fitFov = 2.0 * atan((2.05 / dist) / max(0.40, aspect));
+    float fov = max(baseFov, fitFov);
+
+    vec3 target = vec3(0.0, 1.30, -0.38);
+    vec3 camPos = target + vec3(
+      sin(yaw) * cos(pitch) * dist,
+      sin(pitch) * dist + 0.18,
+      cos(yaw) * cos(pitch) * dist
+    );
+
+    vec3 forward = normalize(target - camPos);
+    vec3 right = normalize(cross(forward, vec3(0.0, 1.0, 0.0)));
+    vec3 up = cross(right, forward);
+    vec3 rd = normalize(forward + right * uv.x * tan(fov * 0.5) * aspect + up * uv.y * tan(fov * 0.5));
+
+    vec3 col = tracePath(camPos, rd);
+    col = aces(col * uExposure);
+    col = pow(col, vec3(1.0 / 2.2));
+    float alpha = 1.0 / float(max(1, iFrame + 1));
+    fragColor = vec4(col, alpha);
+  }`;
+
+  const dispVS = `#version 300 es
+  in vec2 aPos;
+  out vec2 vUv;
+  void main(){
+    vUv = aPos * 0.5 + 0.5;
+    gl_Position = vec4(aPos, 0.0, 1.0);
+  }`;
+
+  const dispFS = `#version 300 es
+  precision highp float;
+  in vec2 vUv;
+  out vec4 fragColor;
+  uniform sampler2D uTex;
+  void main(){
+    vec3 c = texture(uTex, vUv).rgb;
+    fragColor = vec4(c, 1.0);
+  }`;
+
+  function compile(type, src){
+    const sh = gl.createShader(type);
+    gl.shaderSource(sh, src);
+    gl.compileShader(sh);
+    if(!gl.getShaderParameter(sh, gl.COMPILE_STATUS)){
+      const msg = gl.getShaderInfoLog(sh);
+      gl.deleteShader(sh);
+      throw new Error(msg);
+    }
+    return sh;
+  }
+
+  function program(vs, fs){
+    const p = gl.createProgram();
+    gl.attachShader(p, compile(gl.VERTEX_SHADER, vs));
+    gl.attachShader(p, compile(gl.FRAGMENT_SHADER, fs));
+    gl.linkProgram(p);
+    if(!gl.getProgramParameter(p, gl.LINK_STATUS)){
+      const msg = gl.getProgramInfoLog(p);
+      gl.deleteProgram(p);
+      throw new Error(msg);
+    }
+    return p;
+  }
+
+  let accProg, dispProg, accLoc, dispLoc, quadVAO, quadVBO;
+  try{
+    accProg = program(accVS, accFS);
+    dispProg = program(dispVS, dispFS);
+    accLoc = {};
+    ['aPos'].forEach(n => accLoc[n] = gl.getAttribLocation(accProg, n));
+    ['iResolution','iTime','iFrame','iSample','uCamera','uExposure','uAutoOrbit','uLightColor','uLightPower','uBoxCenter[0]','uBoxSize[0]','uBoxMat[0]'].forEach(n => accLoc[n] = gl.getUniformLocation(accProg, n));
+    dispLoc = {
+      aPos: gl.getAttribLocation(dispProg, 'aPos'),
+      uTex: gl.getUniformLocation(dispProg, 'uTex')
+    };
+
+    quadVAO = gl.createVertexArray();
+    quadVBO = gl.createBuffer();
+    gl.bindVertexArray(quadVAO);
+    gl.bindBuffer(gl.ARRAY_BUFFER, quadVBO);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
+      -1,-1,  1,-1,  -1,1,
+      -1,1,   1,-1,   1,1
+    ]), gl.STATIC_DRAW);
+    gl.enableVertexAttribArray(0);
+    gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+  }catch(err){
+    console.error(err);
+    fallback.style.display = 'grid';
+    fallback.querySelector('h1').textContent = '着色器编译失败';
+    fallback.querySelector('p').textContent = err.message;
+    return;
+  }
+
+  const fbo = gl.createFramebuffer();
+  let tex = gl.createTexture();
+  let texW = 1, texH = 1;
+
+  function resizeTexture(w, h){
+    texW = Math.max(2, w | 0);
+    texH = Math.max(2, h | 0);
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, texW, texH, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+    const status = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    if(status !== gl.FRAMEBUFFER_COMPLETE) throw new Error('Framebuffer incomplete: ' + status);
+  }
+
+  const ui = {
+    resolution: document.getElementById('resolution'),
+    samplesPerFrame: document.getElementById('samplesPerFrame'),
+    maxSamples: document.getElementById('maxSamples'),
+    exposure: document.getElementById('exposure'),
+    autoOrbit: document.getElementById('autoOrbit'),
+    randomLight: document.getElementById('randomLight'),
+    resetCamera: document.getElementById('resetCamera'),
+    resVal: document.getElementById('resVal'),
+    spfVal: document.getElementById('spfVal'),
+    maxVal: document.getElementById('maxVal'),
+    expVal: document.getElementById('expVal'),
+    sampleReadout: document.getElementById('sampleReadout'),
+    fpsReadout: document.getElementById('fpsReadout')
+  };
+
+  const MAT_RED = 0, MAT_GREEN = 1, MAT_WHITE = 2, MAT_LIGHT = 3, MAT_DARK = 4;
+
+  const camera = { yaw: 0.0, pitch: -0.08, dist: 5.2, fov: 0.85 };
+  const light = { color: [1.0, 0.965, 0.86], power: 34.0 };
+
+  let resolutionScale = Number(ui.resolution.value);
+  let samplesPerFrame = Number(ui.samplesPerFrame.value);
+  let maxSamples = Number(ui.maxSamples.value);
+  let exposure = Number(ui.exposure.value);
+  let accumSamples = 0;
+  let frame = 0;
+  let paused = false;
+  let last = performance.now();
+  let fpsSmoothing = 0;
+
+  function updateLabels(){
+    ui.resVal.textContent = Math.round(resolutionScale * 100) + '%';
+    ui.spfVal.textContent = String(samplesPerFrame);
+    ui.maxVal.textContent = String(maxSamples);
+    ui.expVal.textContent = exposure.toFixed(2);
+  }
+
+  function resetAccumulation(){
+    accumSamples = 0;
+    frame = 0;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+    gl.viewport(0, 0, texW, texH);
+    gl.disable(gl.BLEND);
+    gl.colorMask(true, true, true, true);
+    gl.clearColor(0, 0, 0, 0);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+  }
+
+  function resize(){
+    const dpr = Math.min(window.devicePixelRatio || 1, 2) * resolutionScale;
+    const w = Math.max(2, Math.floor(window.innerWidth * dpr));
+    const h = Math.max(2, Math.floor(window.innerHeight * dpr));
+    if(canvas.width !== w || canvas.height !== h || texW !== w || texH !== h){
+      canvas.width = w;
+      canvas.height = h;
+      resizeTexture(w, h);
+      resetAccumulation();
+    }
+  }
+
+  function randomLight(){
+    const colors = [
+      [1.00, 0.96, 0.84],
+      [0.82, 0.90, 1.00],
+      [1.00, 0.82, 0.68],
+      [0.95, 1.00, 0.88]
+    ];
+    const c = colors[Math.floor(Math.random() * colors.length)];
+    light.color = c;
+    light.power = 28 + Math.random() * 14;
+    resetAccumulation();
+  }
+
+  function setUniforms(time, sampleIndex){
+    const centers = new Float32Array([
+      -1.50,  1.50, -0.75,
+       1.50,  1.50, -0.75,
+       0.00, -0.50, -0.75,
+       0.00,  4.00, -0.75,
+       0.00,  1.50, -1.50,
+      -0.65,  0.30, -0.45,
+       0.65,  0.75, -0.65,
+       0.00,  2.94, -0.35
+    ]);
+    const sizes = new Float32Array([
+      0.08,  3.00, 3.00,
+      0.08,  3.00, 3.00,
+      3.00,  1.00, 3.00,
+      3.00,  2.00, 3.00,
+      3.00,  3.00, 0.08,
+      0.65,  0.60, 0.65,
+      0.65,  1.50, 0.65,
+      1.00,  0.04, 0.70
+    ]);
+    const mats = new Int32Array([MAT_RED, MAT_GREEN, MAT_WHITE, MAT_WHITE, MAT_WHITE, MAT_WHITE, MAT_WHITE, MAT_LIGHT]);
+
+    gl.useProgram(accProg);
+    gl.uniform2f(accLoc.iResolution, texW, texH);
+    gl.uniform1f(accLoc.iTime, time);
+    gl.uniform1i(accLoc.iFrame, accumSamples + sampleIndex);
+    gl.uniform1i(accLoc.iSample, sampleIndex);
+    gl.uniform4f(accLoc.uCamera, camera.yaw, camera.pitch, camera.dist, camera.fov);
+    gl.uniform1f(accLoc.uExposure, exposure);
+    gl.uniform1f(accLoc.uAutoOrbit, ui.autoOrbit.checked ? 1 : 0);
+    gl.uniform3f(accLoc.uLightColor, light.color[0], light.color[1], light.color[2]);
+    gl.uniform1f(accLoc.uLightPower, light.power);
+    gl.uniform3fv(accLoc['uBoxCenter[0]'], centers);
+    gl.uniform3fv(accLoc['uBoxSize[0]'], sizes);
+    gl.uniform1iv(accLoc['uBoxMat[0]'], mats);
+  }
+
+  function drawAccumulation(time){
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+    gl.viewport(0, 0, texW, texH);
+    gl.useProgram(accProg);
+    gl.bindVertexArray(quadVAO);
+
+    for(let i=0; i<samplesPerFrame && accumSamples < maxSamples; i++){
+      accumSamples++;
+      setUniforms(time, i);
+      gl.enable(gl.BLEND);
+      gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+      gl.drawArrays(gl.TRIANGLES, 0, 6);
+    }
+
+    gl.disable(gl.BLEND);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  }
+
+  function drawDisplay(){
+    gl.viewport(0, 0, canvas.width, canvas.height);
+    gl.useProgram(dispProg);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.uniform1i(dispLoc.uTex, 0);
+    gl.bindVertexArray(quadVAO);
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+  }
+
+  function loop(now){
+    const dt = Math.min(0.1, (now - last) / 1000);
+    last = now;
+    fpsSmoothing = fpsSmoothing ? fpsSmoothing * 0.92 + (1/dt) * 0.08 : (1/dt);
+
+    if(!paused && accumSamples < maxSamples){
+      drawAccumulation(now * 0.001);
+    }
+    drawDisplay();
+
+    ui.sampleReadout.textContent = String(Math.min(accumSamples, maxSamples));
+    ui.fpsReadout.textContent = Math.round(fpsSmoothing) + ' fps';
+    requestAnimationFrame(loop);
+  }
+
+  ui.resolution.addEventListener('input', () => {
+    resolutionScale = Number(ui.resolution.value);
+    updateLabels();
+    resize();
+  });
+  ui.samplesPerFrame.addEventListener('input', () => {
+    samplesPerFrame = Number(ui.samplesPerFrame.value);
+    updateLabels();
+    resetAccumulation();
+  });
+  ui.maxSamples.addEventListener('input', () => {
+    maxSamples = Number(ui.maxSamples.value);
+    updateLabels();
+    resetAccumulation();
+  });
+  ui.exposure.addEventListener('input', () => {
+    exposure = Number(ui.exposure.value);
+    updateLabels();
+    resetAccumulation();
+  });
+  ui.autoOrbit.addEventListener('change', resetAccumulation);
+  ui.randomLight.addEventListener('click', randomLight);
+  ui.resetCamera.addEventListener('click', () => {
+    camera.yaw = 0.0;
+    camera.pitch = -0.08;
+    camera.dist = 5.2;
+    resetAccumulation();
+  });
+
+  const pointers = new Map();
+  let pinchStart = 0;
+  let pinchStartDist = camera.dist;
+  let lastTap = 0;
+
+  function distance(a, b){
+    return Math.hypot(a.x - b.x, a.y - b.y);
+  }
+
+  canvas.addEventListener('contextmenu', e => e.preventDefault());
+
+  canvas.addEventListener('pointerdown', e => {
+    canvas.setPointerCapture(e.pointerId);
+    pointers.set(e.pointerId, { x:e.clientX, y:e.clientY });
+    if(pointers.size === 2){
+      const pts = [...pointers.values()];
+      pinchStart = distance(pts[0], pts[1]) || 1;
+      pinchStartDist = camera.dist;
+    }
+  });
+
+  canvas.addEventListener('pointermove', e => {
+    if(!pointers.has(e.pointerId)) return;
+    const prev = pointers.get(e.pointerId);
+    const cur = { x:e.clientX, y:e.clientY };
+    pointers.set(e.pointerId, cur);
+
+    if(pointers.size >= 2){
+      const pts = [...pointers.values()];
+      const d = distance(pts[0], pts[1]);
+      if(d > 1){
+        camera.dist = Math.max(2.4, Math.min(8.5, pinchStartDist * (pinchStart / d)));
+        resetAccumulation();
+      }
+      return;
+    }
+
+    const dx = cur.x - prev.x;
+    const dy = cur.y - prev.y;
+    if(Math.abs(dx) + Math.abs(dy) > 0.5){
+      camera.yaw += dx * 0.006;
+      camera.pitch = Math.max(-0.30, Math.min(0.25, camera.pitch + dy * 0.006));
+      resetAccumulation();
+    }
+  });
+
+  function endPointer(e){
+    pointers.delete(e.pointerId);
+    if(pointers.size < 2) pinchStart = 0;
+  }
+  canvas.addEventListener('pointerup', endPointer);
+  canvas.addEventListener('pointercancel', endPointer);
+  canvas.addEventListener('pointerleave', e => {
+    if(e.pointerType === 'mouse') endPointer(e);
+  });
+
+  canvas.addEventListener('dblclick', () => {
+    const now = performance.now();
+    if(now - lastTap < 320){
+      camera.yaw = 0.0;
+      camera.pitch = -0.08;
+      camera.dist = 5.2;
+      resetAccumulation();
+    }
+    lastTap = now;
+  });
+
+  canvas.addEventListener('wheel', e => {
+    e.preventDefault();
+    camera.dist = Math.max(2.4, Math.min(8.5, camera.dist * (1 + e.deltaY * 0.0015)));
+    resetAccumulation();
+  }, { passive:false });
+
+  window.addEventListener('resize', resize);
+  document.addEventListener('visibilitychange', () => {
+    if(document.hidden) paused = true;
+    else {
+      paused = false;
+      last = performance.now();
+    }
+  });
+
+  updateLabels();
+  resize();
+  requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>
